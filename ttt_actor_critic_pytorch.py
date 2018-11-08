@@ -85,24 +85,27 @@ actor = torch.nn.Sequential(
     torch.nn.Linear(D_in, H),
     torch.nn.ReLU(),
     torch.nn.Linear(H, D_out),
-    torch.nn.Softmax(dim=0),
 )
 critic = torch.nn.Sequential(
     torch.nn.Linear(D_in, H),
     torch.nn.ReLU(),
     torch.nn.Linear(H, D_out),
-    torch.nn.Sigmoid(),
+    torch.nn.Tanh(),
 )
+softmax = torch.nn.Softmax(dim=0)
+sigmoid = torch.nn.Sigmoid()
 
 def get_action_value(actor, board):
     board = torch.from_numpy(board).float()
     action_value = actor(board)
+    action_value = sigmoid(action_value)
     return action_value
 
 def get_action(actor, boards):
     boards = torch.from_numpy(boards).float()
     possible_actions_values = actor(boards)
-    action = torch.multinomial(possible_actions_values.view(1,-1), 1)
+    possible_actions_props = softmax(possible_actions_values)
+    action = torch.multinomial(possible_actions_props.view(1,-1), 1)
     return int(action)
 
 def get_state_value(critic, after_state):
@@ -125,9 +128,9 @@ def epsilon_greedy(critic, possible_boards, epsilon=.9):
 env = tictactoe()
 
 
-gamma = .95
-actor_alpha = 0.0001
-critic_alpha = 0.0001
+gamma = .90
+actor_alpha = 0.05
+critic_alpha = 0.1
 forever = 100000
 
 plt_iter = 1000
@@ -152,8 +155,8 @@ for episode in range(forever):
     I = 1
     while not done:
         with torch.no_grad():
-            #action = get_action(actor, possible_boards) # Using actor
-            action = epsilon_greedy(critic, possible_boards) # Only use q values
+            action = get_action(actor, possible_boards) # Using actor
+            #action = epsilon_greedy(critic, possible_boards) # Only use after_state values
             after_state, reward, done = env.step(possible_moves[action])
             if not done:
                 value = get_state_value(critic, after_state)
