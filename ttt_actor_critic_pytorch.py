@@ -1,10 +1,9 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from torch.autograd import Variable
-from IPython.display import clear_output
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#device = torch.device("cpu")
 class tictactoe():
     def __init__(self):
         self.board = np.zeros(9, dtype='int')
@@ -73,6 +72,7 @@ class tictactoe():
 def reset_graph(seed=42):
     #tf.reset_default_graph()
     #tf.set_random_seed(seed)
+    torch.manual_seed(seed)
     np.random.seed(seed)
 reset_graph()
 
@@ -85,6 +85,7 @@ actor = torch.nn.Sequential(
     torch.nn.Linear(D_in, H),
     torch.nn.ReLU(),
     torch.nn.Linear(H, D_out),
+    torch.nn.Softmax(dim=0),
 )
 critic = torch.nn.Sequential(
     torch.nn.Linear(D_in, H),
@@ -92,20 +93,18 @@ critic = torch.nn.Sequential(
     torch.nn.Linear(H, D_out),
     torch.nn.Tanh(),
 )
-softmax = torch.nn.Softmax(dim=0)
-sigmoid = torch.nn.Sigmoid()
 
-def get_action_value(actor, board):
-    board = torch.from_numpy(board).float()
-    action_value = actor(board)
-    action_value = sigmoid(action_value)
+
+def get_action_value(actor, boards, action):
+    boards = torch.from_numpy(boards).float()
+    possible_actions_probs = actor(boards)
+    action_value = possible_actions_probs[action]
     return action_value
 
 def get_action(actor, boards):
     boards = torch.from_numpy(boards).float()
-    possible_actions_values = actor(boards)
-    possible_actions_props = softmax(possible_actions_values)
-    action = torch.multinomial(possible_actions_props.view(1,-1), 1)
+    possible_actions_probs = actor(boards)
+    action = torch.multinomial(possible_actions_probs.view(1,-1), 1)
     return int(action)
 
 def get_state_value(critic, after_state):
@@ -123,38 +122,28 @@ def epsilon_greedy(critic, possible_boards, epsilon=.9):
     return int(index)
         
         
-    
-
-env = tictactoe()
-
-
 gamma = .90
 actor_alpha = 0.05
-critic_alpha = 0.1
+critic_alpha = 0.05
 forever = 100000
 
 plt_iter = 1000
 rew = []
 rew_plt = []
 
+from time import time
+tic = time()
 
-for episode in range(forever):
-    
-    ###### output
-    if episode%1000==0:
-        print("\rEpisode: {}".format(episode, end=""))
-        if episode%plt_iter == 0:
-            clear_output()
-            print("\rIteration: {}".format(episode))
-    #####        
-    
-            
+env = tictactoe()
+
+for episode in range(forever):      
     state = env.reset()
     done = False
-    possible_moves, possible_boards = env.legal_moves(1)
     I = 1
+
     while not done:
         with torch.no_grad():
+            possible_moves, possible_boards = env.legal_moves(1)
             action = get_action(actor, possible_boards) # Using actor
             #action = epsilon_greedy(critic, possible_boards) # Only use after_state values
             after_state, reward, done = env.step(possible_moves[action])
@@ -166,7 +155,6 @@ for episode in range(forever):
             if not done:
                 next_state, reward, done = env.make_move()
                 reward = -reward
-                possible_moves, possible_boards = env.legal_moves(1)
                 next_value = get_state_value(critic, next_state)
             else:
                 next_value = 0
@@ -182,6 +170,10 @@ for episode in range(forever):
                 plt.plot(rew_plt)
                 plt.show()
                 rnd = False
+                print("Episode: {}".format(episode))
+                toc=time()
+                print('time per',plt_iter,':',toc-tic)
+                tic=toc
         ######
                 
         # apply gradients
@@ -192,13 +184,14 @@ for episode in range(forever):
             for param in critic.parameters():
                 param += critic_alpha * delta * param.grad
         
-        pi = get_action_value(actor, after_state)
+        pi = get_action_value(actor, possible_boards, action)
+        pi.clamp(min=1e-8) # so that log does not become nan
         log_pi = torch.log(pi) 
         actor.zero_grad()
         log_pi.backward()
         with torch.no_grad():
             for param in actor.parameters():
-                param += actor_alpha * delta * param.grad
+                param += actor_alpha * I * delta * param.grad
             
         I *= gamma
         
