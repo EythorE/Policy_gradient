@@ -94,7 +94,13 @@ critic = torch.nn.Sequential(
     torch.nn.Tanh(),
 )
 
-
+def get_action_and_value(actor, boards):
+    boards = torch.from_numpy(boards).float()
+    possible_actions_probs = actor(boards)
+    action = int(torch.multinomial(possible_actions_probs.view(1,-1), 1))
+    action_value = possible_actions_probs[action]
+    return action, action_value
+    
 def get_action_value(actor, boards, action):
     boards = torch.from_numpy(boards).float()
     possible_actions_probs = actor(boards)
@@ -125,6 +131,13 @@ def epsilon_greedy(critic, possible_boards, epsilon=.9):
 gamma = .90
 actor_alpha = 0.05
 critic_alpha = 0.05
+
+critic_lambda = 0.9
+actor_lambda = 0.9
+
+critic_Z = [0 for layer in critic.parameters()]
+actor_Z = [0 for layer in actor.parameters()]
+
 forever = 100000
 
 plt_iter = 1000
@@ -140,17 +153,39 @@ for episode in range(forever):
     state = env.reset()
     done = False
     I = 1
-
+    step = 1
+    
     while not done:
+        #action = epsilon_greedy(critic, possible_boards) # Only use after_state values
+        #pi = get_action_value(actor, possible_boards, action)
+        
+        possible_moves, possible_boards = env.legal_moves(1)
+        action, pi = get_action_and_value(actor, possible_boards) # Using actor
+        
+        # calc actor gradient
+        pi.clamp(min=1e-8) # so that log does not become nan
+        log_pi = torch.log(pi) 
+        actor.zero_grad()
+        log_pi.backward()
         with torch.no_grad():
-            possible_moves, possible_boards = env.legal_moves(1)
-            action = get_action(actor, possible_boards) # Using actor
-            #action = epsilon_greedy(critic, possible_boards) # Only use after_state values
-            after_state, reward, done = env.step(possible_moves[action])
-            if not done:
-                value = get_state_value(critic, after_state)
-            else:
-                value = 0
+            for i, param in enumerate(actor.parameters()):
+                actor_Z[i] = actor_lambda * I * actor_Z[i] + param.grad
+        
+        
+        after_state, reward, done = env.step(possible_moves[action])
+        
+        if not done:
+            value = get_state_value(critic, after_state)
+            #calc critic gradient
+            critic.zero_grad()
+            value.backward()
+            with torch.no_grad():
+                for i, param in enumerate(critic.parameters()):
+                    critic_Z[i] = critic_lambda * critic_Z[i] + param.grad
+        else:
+            value = 0
+            
+        with torch.no_grad():
             # other players move
             if not done:
                 next_state, reward, done = env.make_move()
@@ -158,42 +193,56 @@ for episode in range(forever):
                 next_value = get_state_value(critic, next_state)
             else:
                 next_value = 0
-            delta = reward + gamma*next_value - value
-        
-        ###### plot
-        if episode%plt_iter == 0:
-            env.render()
-            if done:
-                print('Reward: ',reward)
-                rew_plt.append(np.mean(np.equal(rew,1)))
-                rew = []
-                plt.plot(rew_plt)
-                plt.show()
-                rnd = False
-                print("Episode: {}".format(episode))
-                toc=time()
-                print('time per',plt_iter,':',toc-tic)
-                tic=toc
-        ######
                 
-        # apply gradients
-        value = get_state_value(critic, after_state)
-        critic.zero_grad()
-        value.backward()
-        with torch.no_grad():
-            for param in critic.parameters():
-                param += critic_alpha * delta * param.grad
+            if step > 1:
+                delta = reward + gamma*value - old_value
+            
+            old_value = value
         
-        pi = get_action_value(actor, possible_boards, action)
-        pi.clamp(min=1e-8) # so that log does not become nan
-        log_pi = torch.log(pi) 
-        actor.zero_grad()
-        log_pi.backward()
-        with torch.no_grad():
-            for param in actor.parameters():
-                param += actor_alpha * I * delta * param.grad
+            ###### plot
+            if episode%plt_iter == 0:
+                env.render()
+                if done:
+                    print('Reward: ',reward)
+                    rew_plt.append(np.mean(np.equal(rew,-1)))
+                    rew = []
+                    plt.plot(rew_plt)
+                    plt.show()
+                    rnd = False
+                    print("Episode: {}".format(episode))
+                    toc=time()
+                    print('time per',plt_iter,':',toc-tic)
+                    tic=toc
+            ######
+            
+            # apply gradients
+            if step > 1:
+                for i, param in enumerate(critic.parameters()):
+                    param += critic_alpha * delta * critic_Z[i]
+                for i, param in enumerate(actor.parameters()):
+                    param += actor_alpha * delta * actor_Z[i]
+ 
+
+#        if step > 1:
+#            # apply gradients
+#            value = get_state_value(critic, after_state)
+#            critic.zero_grad()
+#            value.backward()
+#            with torch.no_grad():
+#                for param in critic.parameters():
+#                    param += critic_alpha * delta * param.grad
+#            
+#            pi = get_action_value(actor, possible_boards, action)
+#            pi.clamp(min=1e-8) # so that log does not become nan
+#            log_pi = torch.log(pi) 
+#            actor.zero_grad()
+#            log_pi.backward()
+#            with torch.no_grad():
+#                for param in actor.parameters():
+#                    param += actor_alpha * I * delta * param.grad
             
         I *= gamma
+        step +=1
         
     rew.append(reward)
 
